@@ -323,13 +323,92 @@
     </nav>
   );
 
+  // ==================== Emoji Sprite 預渲染 ====================
+  // 平板上每幀對數百個 emoji 呼叫 fillText 會卡（彩色字形塑形太貴）；且靜態只畫一次的 emoji（如樹）
+  // 常因首次繪製時字形尚未 ready 而空白。改成開頭把 emoji 畫到離屏 canvas 快取，動畫改用 drawImage 貼圖。
+  const SPRITE_BASE = 48;   // sprite 基準字級，顯示時再縮小（縮小不糊）
+  const SPRITE_PAD = 1.4;   // 留邊係數，避免 emoji 邊緣被裁切
+  const spriteCache = {};   // emoji 字元 → { canvas, logical, base }
+  const spriteReadyCallbacks = [];
+  let spritesReady = false;
+
+  function buildSprite(char, baseFont, dpr) {
+    const logical = Math.ceil(baseFont * SPRITE_PAD);
+    const cv = document.createElement('canvas');
+    cv.width = logical * dpr; cv.height = logical * dpr;
+    const cx = cv.getContext('2d');
+    cx.scale(dpr, dpr);
+    cx.font = `${baseFont}px serif`;
+    cx.textAlign = 'center'; cx.textBaseline = 'middle';
+    cx.fillText(char, logical / 2, logical / 2);
+    return { canvas: cv, logical, base: baseFont };
+  }
+
+  // 水平翻轉一張 sprite（給朝左游的魚用，取代每幀 ctx.scale(-1,1) 繞過字形快取的開銷）
+  function flipSprite(src) {
+    const cv = document.createElement('canvas');
+    cv.width = src.canvas.width; cv.height = src.canvas.height;
+    const cx = cv.getContext('2d');
+    cx.translate(cv.width, 0); cx.scale(-1, 1);
+    cx.drawImage(src.canvas, 0, 0);
+    return { canvas: cv, logical: src.logical, base: src.base };
+  }
+
+  // 偵測 sprite 是否真的畫出東西：字形未 ready 時 fillText 會留下全透明畫布
+  function isSpriteNonEmpty(sprite) {
+    const cx = sprite.canvas.getContext('2d');
+    const data = cx.getImageData(0, 0, sprite.canvas.width, sprite.canvas.height).data;
+    for (let i = 3; i < data.length; i += 4) if (data[i] !== 0) return true;
+    return false;
+  }
+
+  // 啟動 sprite 建置；emoji 字形可能延遲 ready，故以 rAF 重試直到畫得出（上限約 1 秒）
+  function ensureSprites(onReady) {
+    if (spritesReady) { if (onReady) onReady(); return; }
+    if (onReady) spriteReadyCallbacks.push(onReady);
+    if (ensureSprites._started) return;
+    ensureSprites._started = true;
+    const dpr = Math.min(window.devicePixelRatio || 1, MAX_DPR);
+    let attempts = 0;
+    const tryBuild = () => {
+      const fish = buildSprite('🐟', SPRITE_BASE, dpr);
+      if (!isSpriteNonEmpty(fish) && attempts++ < 60) {
+        requestAnimationFrame(tryBuild);
+        return;
+      }
+      if (!isSpriteNonEmpty(fish)) {
+        console.warn('emoji sprite 多次嘗試後仍空白，此裝置可能缺少該 emoji 字形');
+      }
+      spriteCache['🐟'] = fish;
+      spriteCache['🐟L'] = flipSprite(fish);
+      spriteCache['🦋'] = buildSprite('🦋', SPRITE_BASE, dpr);
+      spriteCache['🌳'] = buildSprite('🌳', SPRITE_BASE, dpr);
+      spritesReady = true;
+      spriteReadyCallbacks.forEach(cb => cb());
+      spriteReadyCallbacks.length = 0;
+    };
+    tryBuild();
+  }
+
+  // 依目標字級把快取 sprite 貼到 (0,0)；呼叫端需先 translate 到中心。回傳是否成功貼圖。
+  function drawSprite(ctx, char, targetFont, scale = 1) {
+    const sprite = spriteCache[char];
+    if (!sprite) return false;
+    const dw = sprite.logical * (targetFont / sprite.base) * scale;
+    ctx.drawImage(sprite.canvas, -dw / 2, -dw / 2, dw, dw);
+    return true;
+  }
+
   // ==================== Canvas Drawing Helpers ====================
   function drawTree(ctx, t) {
+    const targetFont = t.sz || 20;
     ctx.save();
-    ctx.font = `${t.sz || 20}px serif`;
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText('🌳', t.x, t.y);
+    ctx.translate(t.x, t.y);
+    if (!drawSprite(ctx, '🌳', targetFont)) {
+      ctx.font = `${targetFont}px serif`;
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText('🌳', 0, 0);
+    }
     ctx.restore();
   }
 
@@ -350,11 +429,14 @@
     if (f.isDead) return;
     ctx.save();
     ctx.translate(f.x, f.y);
-    if ((f.vx || 0) < -0.05) ctx.scale(-1, 1);
-    ctx.font = `${11 + Math.floor(f.size * 0.5)}px serif`;
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText('🐟', 0, 0);
+    const targetFont = 11 + Math.floor(f.size * 0.5);
+    const facingLeft = (f.vx || 0) < -0.05;
+    if (!drawSprite(ctx, facingLeft ? '🐟L' : '🐟', targetFont)) {
+      if (facingLeft) ctx.scale(-1, 1);
+      ctx.font = `${targetFont}px serif`;
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText('🐟', 0, 0);
+    }
     if (f.isMarked) {
       ctx.fillStyle = '#ef4444';
       ctx.shadowColor = '#ef4444'; ctx.shadowBlur = 3;
@@ -389,11 +471,13 @@
     ctx.save();
     ctx.translate(b.x, b.y);
     const flapScale = 0.85 + 0.15 * Math.abs(Math.sin(b.wingPhase));
-    const fontSize = Math.round((13 + b.size * 0.4) * flapScale);
-    ctx.font = `${fontSize}px serif`;
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText('🦋', 0, 0);
+    const targetFont = 13 + b.size * 0.4;
+    if (!drawSprite(ctx, '🦋', targetFont, flapScale)) {
+      const fontSize = Math.round(targetFont * flapScale);
+      ctx.font = `${fontSize}px serif`;
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText('🦋', 0, 0);
+    }
     if (b.isMarked) {
       if (b.markType === 'fluorescent') {
         ctx.fillStyle = '#4ade80';
@@ -502,12 +586,17 @@
     const [gridSize, setGridSize] = useState('');
     const [selectedCells, setSelectedCells] = useState(new Set());
     const [canAdvance, setCanAdvance] = useState(false);
+    const [spritesOk, setSpritesOk] = useState(false);
     const canvasRef = useRef(null);
     const treesRef = useRef([]);
 
     useEffect(() => {
+      let mounted = true;
       treesRef.current = generateTrees(TOTAL_TREES, CW, CH);
+      // sprite 就緒後重畫一次，確保樹（靜態只畫一次）在字形 ready 後一定顯示
+      ensureSprites(() => { if (mounted) setSpritesOk(true); });
       drawCanvas();
+      return () => { mounted = false; };
     }, []);
 
     const gs = gridSize ? Number(gridSize) : 0;
@@ -587,7 +676,7 @@
       }
     }, [gs, selectedCells, step]);
 
-    useEffect(() => { drawCanvas(); }, [drawCanvas]);
+    useEffect(() => { drawCanvas(); }, [drawCanvas, spritesOk]);
 
     useEffect(() => {
       if (step === 1) setCanAdvance(!!gs);
@@ -1329,6 +1418,7 @@
     );
   };
 
+  ensureSprites(); // 頁面載入即開始預建 emoji sprite，讓動畫一開始就能用貼圖
   ReactDOM.createRoot(document.getElementById('root')).render(<App />);
   </script>
 </body>
