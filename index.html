@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="format-detection" content="telephone=no">
-  <title>AI虛擬生態島</title>
+  <title>族群估算互動模擬器</title>
 
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -77,6 +77,8 @@
 
   // ==================== Constants ====================
   const CW = 800, CH = 500;
+  // 平板高 DPR 會讓 canvas 實際像素隨 dpr² 暴增（dpr=3 時達 360 萬像素/幀），上限鉗在 2 平衡銳利度與填充率
+  const MAX_DPR = 2;
   const TOTAL_TREES = 100;
   const TOTAL_FISH = 637;
   const TOTAL_BUTTERFLIES = 523;
@@ -275,7 +277,7 @@
 
   const Header = () => (
     <header className="w-full bg-blue-600 text-white py-6 px-4 text-center shadow-md z-20 relative">
-      <h1 className="text-3xl md:text-4xl font-black tracking-wider mb-2 drop-shadow-md">AI虛擬生態島</h1>
+      <h1 className="text-3xl md:text-4xl font-black tracking-wider mb-2 drop-shadow-md">族群估算互動模擬器</h1>
       <p className="text-sm md:text-base text-blue-100 font-medium">探索樣區法與捉放法的估算邏輯</p>
     </header>
   );
@@ -531,7 +533,7 @@
     const drawCanvas = useCallback(() => {
       const canvas = canvasRef.current;
       if (!canvas) return;
-      const dpr = window.devicePixelRatio || 1;
+      const dpr = Math.min(window.devicePixelRatio || 1, MAX_DPR);
       canvas.width = CW * dpr; canvas.height = CH * dpr;
       const ctx = canvas.getContext('2d');
       ctx.scale(dpr, dpr);
@@ -767,7 +769,7 @@
 
     useEffect(() => {
       const canvas = canvasRef.current;
-      const dpr = window.devicePixelRatio || 1;
+      const dpr = Math.min(window.devicePixelRatio || 1, MAX_DPR);
       canvas.width = CW * dpr; canvas.height = CH * dpr;
       const ctx = canvas.getContext('2d');
       ctx.scale(dpr, dpr);
@@ -1027,7 +1029,7 @@
 
     useEffect(() => {
       const canvas = canvasRef.current;
-      const dpr = window.devicePixelRatio || 1;
+      const dpr = Math.min(window.devicePixelRatio || 1, MAX_DPR);
       canvas.width = CW * dpr; canvas.height = CH * dpr;
       const ctx = canvas.getContext('2d');
       ctx.scale(dpr, dpr);
